@@ -411,14 +411,4 @@ Agar aap is project ko use karte ho,
 
 ```
 
----
-
-Agar chaho next step me mai:
-- 🐳 **Docker + docker-compose README**
-- ☁️ **Cloudflare Tunnel step-by-step**
-- 🔐 **Supabase RLS policies**
-- 📈 **Monitoring / logs section**
-
-bhi bana deta hoon.  
-Bas bolo 😄
 ```
