@@ -178,26 +178,89 @@ SUPABASE_SERVICE_ROLE_KEY=service-role-key
 📍 Supabase Dashboard → **SQL Editor**
 
 ---
+Samajh gaya 👍
+Screenshot ke hisaab se **`profiles` table updated hai**, isliye README me **tabular structure + SQL** dono ko **update** karna hoga.
 
-## 🌌 Profiles Table
+Neeche **FULLY UPDATED, COPY-PASTE READY** section diya hai —
+✔️ **screenshot wale saare columns included**
+✔️ **new table banane ka SQL**
+✔️ **existing table ko update karne ka SQL (ALTER TABLE)**
 
-| Column     | Type        | Description |
-| ---------- | ----------- | ----------- |
-| id         | uuid        | auth.uid()  |
-| email      | text        | User email  |
-| full_name  | text        | Full name   |
-| created_at | timestamptz | Auto        |
-| updated_at | timestamptz | Auto        |
+---
+
+# 🌌 PROFILES TABLE (UPDATED – AS PER SUPABASE UI)
+
+## 📊 Table Structure (Latest)
+
+| Column Name    | Data Type   | Default Value | Description                         |
+| -------------- | ----------- | ------------- | ----------------------------------- |
+| **id**         | `uuid`      | `auth.uid()`  | Supabase Auth User ID (Primary Key) |
+| **email**      | `text`      | `''::text`    | User email address                  |
+| **full_name**  | `text`      | `''::text`    | User ka full name                   |
+| **avatar_url** | `text`      | `NULL`        | User profile image URL              |
+| **created_at** | `timestamp` | `now()`       | Record creation time                |
+| **updated_at** | `timestamp` | `now()`       | Last update time                    |
+
+---
+
+## ✅ SQL: Fresh Table Create (NEW PROJECT)
+
+> 📍 **Supabase Dashboard → SQL Editor → New Query**
 
 ```sql
 CREATE TABLE public.profiles (
   id uuid PRIMARY KEY DEFAULT auth.uid(),
-  email text,
-  full_name text,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  email text DEFAULT ''::text,
+  full_name text DEFAULT ''::text,
+  avatar_url text,
+  created_at timestamp DEFAULT now(),
+  updated_at timestamp DEFAULT now()
 );
 ```
+
+---
+
+## 🔁 SQL: UPDATE EXISTING `profiles` TABLE
+
+(If table pehle se bani hui hai)
+
+> ⚠️ **Safe to run – data delete nahi hoga**
+
+```sql
+ALTER TABLE public.profiles
+ADD COLUMN IF NOT EXISTS avatar_url text;
+
+ALTER TABLE public.profiles
+ALTER COLUMN email SET DEFAULT ''::text,
+ALTER COLUMN full_name SET DEFAULT ''::text;
+
+ALTER TABLE public.profiles
+ALTER COLUMN created_at SET DEFAULT now(),
+ALTER COLUMN updated_at SET DEFAULT now();
+```
+
+---
+
+## 🔄 OPTIONAL: Auto-Update `updated_at` Trigger (RECOMMENDED)
+
+Taaki har update pe `updated_at` automatically change ho jaaye 👇
+
+```sql
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ language plpgsql;
+
+CREATE TRIGGER update_profiles_updated_at
+BEFORE UPDATE ON public.profiles
+FOR EACH ROW
+EXECUTE FUNCTION public.update_updated_at_column();
+```
+
+---
 
 ---
 
