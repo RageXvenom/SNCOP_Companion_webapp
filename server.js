@@ -1,22 +1,84 @@
-// server.js
+// server.js – FIXED IMPORT SECTION
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+import jwt from "jsonwebtoken";
+
+dotenv.config();
+
+
+
+dotenv.config();
+
+console.log('===========================================');
+console.log('🚀 SNCOP SERVER STARTING');
+console.log('===========================================');
+console.log('FRONTEND_URL:', process.env.FRONTEND_URL || '❌ NOT SET');
+console.log('JWT_SECRET:', process.env.JWT_SECRET ? '✅ SET' : '❌ NOT SET');
+console.log('SMTP_HOST:', process.env.SMTP_HOST || '❌ NOT SET');
+console.log('SUPABASE_SERVICE_URL:', process.env.SUPABASE_SERVICE_URL || '❌ NOT SET');
+console.log('===========================================');
+
+if (!process.env.FRONTEND_URL) {
+  console.error('⚠️  WARNING: FRONTEND_URL not set! Password reset will fail!');
+}
+if (!process.env.JWT_SECRET) {
+  console.error('⚠️  WARNING: JWT_SECRET not set! Token generation will fail!');
+}
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
 // Middleware - body parsers BEFORE multer, but multer handles multipart
 app.use(cors());
 app.use(express.urlencoded({ limit: '50gb', extended: true }));
 app.use(express.json({ limit: '50gb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '50gb' }));
+
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+const {
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_FROM,
+  JWT_SECRET,
+  FRONTEND_URL,
+  SUPABASE_SERVICE_ROLE_KEY,
+  SUPABASE_SERVICE_URL
+} = process.env;
+
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY; // Fallback anon key
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
+
+if (!JWT_SECRET) {
+  console.error("❌ ERROR: Missing JWT_SECRET in .env");
+}
+
+const mailer = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: Number(SMTP_PORT),
+  secure: Number(SMTP_PORT) === 465,
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS,
+  },
+});
+
 
 // Request timeout middleware
 app.use((req, res, next) => {
@@ -28,13 +90,21 @@ app.use((req, res, next) => {
 // Storage directory
 const STORAGE_DIR = path.join(__dirname, 'storage');
 const METADATA_FILE = path.join(__dirname, 'file-metadata.json');
-
+const PROFILE_PICS_DIR = path.join(__dirname, 'profile-pictures');
 // Ensure storage directory exists
 try {
   fs.ensureDirSync(STORAGE_DIR);
 } catch (error) {
   console.error('Failed to create storage directory:', error);
   process.exit(1);
+}
+
+// Ensure profile pictures directory exists
+try {
+  fs.ensureDirSync(PROFILE_PICS_DIR);
+  console.log('✅ Profile pictures directory created/verified:', PROFILE_PICS_DIR);
+} catch (error) {
+  console.error('❌ Failed to create profile pictures directory:', error);
 }
 
 // Load existing metadata from file
@@ -177,17 +247,22 @@ if (fullBackupData.subjects.length === 0) {
   });
   
   allSubjects.forEach(subject => {
-    const units = new Set();
-    fullBackupData.notes
-      .filter(note => note.subject === subject && note.unit)
-      .forEach(note => units.add(note.unit));
-    
-    fullBackupData.subjects.push({
-      id: Date.now().toString() + Math.random().toString(36).slice(2),
-      name: subject,
-      units: Array.from(units)
-    });
+  // Skip system folders
+  if (subject.toLowerCase() === 'temp' || subject.toLowerCase() === 'profile-pictures') {
+    return;
+  }
+  
+  const units = new Set();
+  fullBackupData.notes
+    .filter(note => note.subject === subject && note.unit)
+    .forEach(note => units.add(note.unit));
+  
+  fullBackupData.subjects.push({
+    id: Date.now().toString() + Math.random().toString(36).slice(2),
+    name: subject,
+    units: Array.from(units)
   });
+});
   
   console.log(`Reconstructed ${fullBackupData.subjects.length} subjects from backup data`);
 }
@@ -278,6 +353,37 @@ const upload = multer({
     } catch (error) {
       console.error('Error in multer fileFilter:', error);
       cb(error);
+    }
+  }
+});
+
+// Configure multer for profile picture uploads
+const profilePictureStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, PROFILE_PICS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const userId = req.body.userId || 'unknown';
+    const ext = path.extname(file.originalname);
+    const filename = `profile_${userId}_${Date.now()}${ext}`;
+    cb(null, filename);
+  }
+});
+
+const uploadProfilePicture = multer({
+  storage: profilePictureStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only image files (JPEG, PNG, GIF, WebP) are allowed!'));
     }
   }
 });
@@ -904,6 +1010,245 @@ app.post('/api/verify-files', (req, res) => {
   }
 });
 
+/* ============================
+   LOGIN (robust admin check + token exchange)
+   - Uses SUPABASE_SERVICE_URL and SUPABASE_SERVICE_ROLE_KEY to fetch users reliably
+   - Returns both access_token and refresh_token for frontend setSession
+============================ */
+app.post("/api/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.json({ success: false, message: "Email and password required" });
+    }
+
+    // 1) Fetch ALL users using admin endpoint
+    const usersResp = await fetch(`${SUPABASE_SERVICE_URL}/auth/v1/admin/users`, {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    });
+
+    const usersJson = await usersResp.json();
+    const users = Array.isArray(usersJson) ? usersJson : usersJson.users || [];
+
+    const foundUser = users.find(
+      u => String(u.email).toLowerCase() === String(email).toLowerCase()
+    );
+
+    console.log("FOUND USER RAW:", foundUser);
+
+    if (!foundUser) {
+      return res.json({ success: false, message: "Invalid email or password" });
+    }
+
+    // 2) ENFORCE VERIFICATION — FINAL FIX
+const isVerified =
+  (typeof foundUser.email_confirmed_at === "string" &&
+    foundUser.email_confirmed_at.trim() !== "") &&
+  foundUser.user_metadata?.email_verified === true;
+
+    if (!isVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Please verify your email before logging in."
+      });
+    }
+
+    // 3) PASSWORD → TOKEN EXCHANGE (ALLOWED ONLY IF VERIFIED)
+    const tokenApiKey = SUPABASE_ANON_KEY;
+
+    const loginResp = await fetch(
+      `${SUPABASE_SERVICE_URL}/auth/v1/token?grant_type=password`,
+      {
+        method: "POST",
+        headers: {
+          apikey: tokenApiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ email, password })
+      }
+    );
+
+    const loginData = await loginResp.json();
+
+    if (!loginResp.ok) {
+      return res.json({
+        success: false,
+        message: loginData?.error_description || loginData?.error || "Login failed"
+      });
+    }
+
+    return res.json({
+      success: true,
+      user: foundUser,
+      access_token: loginData.access_token,
+      refresh_token: loginData.refresh_token
+    });
+
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    return res.json({ success: false, message: "Server error" });
+  }
+});
+
+
+/* ============================
+   REGISTER
+============================ */
+app.post("/api/register", async (req, res) => {
+  try {
+    const { email, password, fullName } = req.body;
+
+    if (!email || !password) {
+      return res.json({ success: false, message: "Email and password required" });
+    }
+
+    // 1) Create user using PUBLIC SIGNUP ENDPOINT
+    const signupResp = await fetch(`${SUPABASE_SERVICE_URL}/auth/v1/signup`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        data: {
+          full_name: fullName,
+          email_verified: false
+        }
+      })
+    });
+
+    const signupData = await signupResp.json();
+
+    if (!signupResp.ok || !signupData.user) {
+      return res.json({
+        success: false,
+        message: signupData.error_description || "Registration failed"
+      });
+    }
+
+    const userId = signupData.user.id;
+
+    // 2) FORCE UNVERIFY
+    await fetch(`${SUPABASE_SERVICE_URL}/auth/v1/admin/users/${userId}`, {
+      method: "PUT",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email_confirmed_at: null,
+        user_metadata: { email_verified: false }
+      })
+    });
+
+    // 3) CREATE PROFILE
+    await fetch(`${SUPABASE_SERVICE_URL}/rest/v1/profiles`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify({
+        id: userId,
+        full_name: fullName,
+        email: email
+      })
+    });
+
+    // 4) SEND VERIFY EMAIL
+    const token = jwt.sign({ email, type: "verify" }, JWT_SECRET, { expiresIn: "7d" });
+
+    await mailer.sendMail({
+      from: SMTP_FROM,
+      to: email,
+      subject: "Verify Your Email",
+      html: `
+        <h2>Hello ${fullName}!</h2>
+        <p>Please verify your email by clicking the link below:</p>
+        <a href="${FRONTEND_URL}/verify-account?token=${token}">Verify Email Here</a>
+      `
+    });
+
+    return res.json({
+      success: true,
+      message: "Account created. Verify your email to continue."
+    });
+
+  } catch (err) {
+    console.error("REGISTER ERROR:", err);
+    return res.json({ success: false, message: "Server error" });
+  }
+});
+
+/* ============================
+   VERIFY ACCOUNT
+============================ */
+app.post("/api/verify-account", async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) return res.json({ success: false, message: "Missing token" });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      return res.json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const email = decoded.email.toLowerCase();
+
+    // FETCH USER
+    const userResp = await fetch(`${SUPABASE_SERVICE_URL}/auth/v1/admin/users`, {
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    });
+
+    const json = await userResp.json();
+    const users = Array.isArray(json) ? json : json.users;
+    const user = users.find(u => u.email.toLowerCase() === email);
+
+    if (!user) return res.json({ success: false, message: "User not found" });
+
+    // UPDATE VERIFIED FIELDS
+    const now = new Date().toISOString();
+
+    await fetch(`${SUPABASE_SERVICE_URL}/auth/v1/admin/users/${user.id}`, {
+      method: "PUT",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email_confirmed_at: now,
+        confirmed_at: now,
+        user_metadata: { email_verified: true }
+      })
+    });
+
+    return res.json({ success: true, message: "Email verified successfully." });
+
+  } catch (err) {
+    console.error("VERIFY ERROR:", err);
+    return res.json({ success: false, message: "Server error" });
+  }
+});
+
+
+
 app.get('/api/storage-sync/:subject?', (req, res) => {
   try {
     const { subject } = req.params;
@@ -918,7 +1263,10 @@ app.get('/api/storage-sync/:subject?', (req, res) => {
       if (fs.existsSync(STORAGE_DIR)) {
         const subjects = fs.readdirSync(STORAGE_DIR).filter(item => {
           const itemPath = path.join(STORAGE_DIR, item);
-          return fs.statSync(itemPath).isDirectory() && item.toLowerCase() !== 'temp';
+          // Filter out temp AND profile-pictures folders
+          return fs.statSync(itemPath).isDirectory() && 
+                 item.toLowerCase() !== 'temp' && 
+                 item.toLowerCase() !== 'profile-pictures';
         });
         
         subjects.forEach(subjectName => {
@@ -926,7 +1274,7 @@ app.get('/api/storage-sync/:subject?', (req, res) => {
           storageStructure[subjectName] = getSubjectFiles(subjectPath, subjectName);
         });
       }
-    }
+    } // ✅ MOVED THE CLOSING BRACE HERE
     
     if (Object.keys(storageStructure).length === 0 && fullBackupData.subjects.length > 0) {
       console.log('Storage structure empty, using backup data');
@@ -1178,6 +1526,180 @@ app.use((error, req, res, next) => {
   console.error('Global error handler:', error);
 });
 
+// Replace the existing GET /verify-account route with this:
+
+app.get("/verify-account", (req, res) => {
+  const { token } = req.query;
+
+  if (!token) {
+    return res.status(400).send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Verification Error</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
+              margin: 0;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+            .container {
+              background: white;
+              padding: 40px;
+              border-radius: 12px;
+              box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+              text-align: center;
+              max-width: 400px;
+            }
+            h2 { color: #e53e3e; margin-bottom: 20px; }
+            p { color: #4a5568; line-height: 1.6; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h2>❌ Invalid Verification Link</h2>
+            <p>The verification token is missing. Please use the link from your email.</p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+
+  // Auto-verify by posting to the API endpoint
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Email Verification</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          }
+          .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 400px;
+          }
+          .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+          .success {
+            color: #38a169;
+            font-size: 60px;
+            margin-bottom: 20px;
+            display: none;
+          }
+          .error {
+            color: #e53e3e;
+            font-size: 60px;
+            margin-bottom: 20px;
+            display: none;
+          }
+          .message {
+            color: #4a5568;
+            line-height: 1.6;
+            margin-bottom: 20px;
+          }
+          .btn {
+            display: inline-block;
+            padding: 12px 30px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            margin-top: 20px;
+            display: none;
+          }
+          .btn:hover {
+            background: #5a67d8;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="spinner" id="spinner"></div>
+          <div class="success" id="success">✓</div>
+          <div class="error" id="error">✗</div>
+          <h2 id="title">Verifying Your Email...</h2>
+          <p class="message" id="message">Please wait while we verify your account.</p>
+          <a href="${process.env.FRONTEND_URL || '/'}/login" class="btn" id="loginBtn">Go to Login</a>
+        </div>
+
+        <script>
+          (async () => {
+            try {
+              const response = await fetch('/api/verify-account', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ token: '${token}' })
+              });
+
+              const data = await response.json();
+
+              document.getElementById('spinner').style.display = 'none';
+
+              if (data.success) {
+                document.getElementById('success').style.display = 'block';
+                document.getElementById('title').textContent = 'Email Verified!';
+                document.getElementById('message').textContent = data.message || 'Your account has been successfully verified. You can now log in.';
+                document.getElementById('loginBtn').style.display = 'inline-block';
+              } else {
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('title').textContent = 'Verification Failed';
+                document.getElementById('message').textContent = data.message || 'Unable to verify your email. The link may have expired.';
+                document.getElementById('loginBtn').style.display = 'inline-block';
+                document.getElementById('loginBtn').textContent = 'Back to Home';
+              }
+            } catch (err) {
+              console.error('Verification error:', err);
+              document.getElementById('spinner').style.display = 'none';
+              document.getElementById('error').style.display = 'block';
+              document.getElementById('title').textContent = 'Verification Error';
+              document.getElementById('message').textContent = 'An unexpected error occurred. Please try again later.';
+              document.getElementById('loginBtn').style.display = 'inline-block';
+              document.getElementById('loginBtn').textContent = 'Back to Home';
+            }
+          })();
+        </script>
+      </body>
+    </html>
+  `);
+});
+
+
+// FINAL FIX: backend should NOT redirect
+// It must send a minimal HTML that lets the frontend handle routing.
+
+
+
+
+
 app.get('/api/assignments', (req, res) => {
   try {
     res.json({
@@ -1231,13 +1753,644 @@ app.delete('/api/subjects/:subjectName', (req, res) => {
   }
 });
 
-app.use('*', (req, res) => {
-  res.status(404).json({
+/* ============================
+   SEND WELCOME + VERIFY EMAIL
+============================ */
+app.post("/api/send-welcome", async (req, res) => {
+  try {
+    const { email, fullName } = req.body;
+
+    const token = jwt.sign(
+      { email, type: "verify" },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    const verifyLink = `${FRONTEND_URL}/verify-account?token=${token}`;
+
+    await mailer.sendMail({
+      from: SMTP_FROM,
+      to: email,
+      subject: "Welcome to SNCOP-AI — Verify Your Email",
+      html: `
+        <h2>Welcome ${fullName}!</h2>
+        <p>Thank you for registering with SNCOP-AI.</p>
+        <p><a href="${verifyLink}" style="font-size:16px;color:blue;">Click here to verify your email</a></p>
+      `,
+    });
+
+    res.json({ success: true, message: "Welcome & verification email sent." });
+  } catch (err) {
+    console.log("WELCOME MAIL ERR:", err);
+    res.status(500).json({ success: false, message: "Email send failed." });
+  }
+});
+
+app.post("/send-welcome", (req, res) => {
+  req.url = "/api/send-welcome";
+  app.handle(req, res);
+});
+
+/* ============================
+      VERIFY ACCOUNT — FINAL WORKING
+============================ */
+
+
+
+/* ============================
+      FORGOT PASSWORD
+============================ */
+/* ============================
+   FORGOT PASSWORD - FIXED URL
+============================ */
+app.post("/api/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    // Create token
+    const token = jwt.sign(
+      { email, type: "reset" },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    // ✅ USE FRONTEND_URL FROM .env INSTEAD OF req.headers.host
+    const resetUrl = `${FRONTEND_URL}/reset-password?jwt=${token}`;
+
+    console.log("========================================");
+    console.log("PASSWORD RESET LINK GENERATED");
+    console.log("Reset URL:", resetUrl);
+    console.log("========================================");
+
+    await mailer.sendMail({
+      from: SMTP_FROM,
+      to: email,
+      subject: "SNCOP-AI Password Reset",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #4F46E5;">Password Reset Request</h2>
+          <p>Click the button below to reset your password:</p>
+          
+          <div style="margin: 30px 0;">
+            <a href="${resetUrl}"
+               style="background-color: #4F46E5; 
+                      color: white; 
+                      padding: 12px 30px; 
+                      text-decoration: none; 
+                      border-radius: 8px; 
+                      display: inline-block;
+                      font-weight: bold;">
+              Reset Password
+            </a>
+          </div>
+          
+          <p style="color: #666; font-size: 14px;">Or copy this link:</p>
+          <p style="word-break: break-all; color: #4F46E5; background: #f3f4f6; padding: 10px; border-radius: 5px;">
+            ${resetUrl}
+          </p>
+          
+          <p style="color: #999; font-size: 12px; margin-top: 30px;">
+            This link expires in 1 hour.
+          </p>
+        </div>
+      `,
+    });
+
+    return res.json({
+      success: true,
+      message: "Password reset email sent",
+    });
+
+  } catch (err) {
+    console.error("FORGOT-PASSWORD ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to send reset email",
+    });
+  }
+});
+
+
+
+app.post("/api/force-unverify", async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    const updateResp = await fetch(
+      `${SUPABASE_SERVICE_URL}/auth/v1/admin/users/${userId}`,
+      {
+        method: "PUT",
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email_confirmed_at: null, // Force unverified
+        }),
+      }
+    );
+
+    if (!updateResp.ok) {
+      const msg = await updateResp.text();
+      console.error("FORCE UNVERIFY ERROR:", msg);
+      return res.json({ success: false });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("FORCE UNVERIFY ERR:", err);
+    return res.json({ success: false });
+  }
+});
+
+
+/* ============================
+   VERIFY ACCOUNT (VITE FIXED)
+============================= */
+
+
+
+/* ============================
+         RESET PASSWORD
+=========================== */
+
+app.post("/reset-password", (req, res, next) => {
+  req.url = "/api/reset-password";
+  next();
+});
+
+app.post("/api/reset-password", async (req, res) => {
+  try {
+    const { token, password, validateOnly } = req.body;
+
+    if (!token) return res.json({ success: false, message: "Missing token" });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const email = decoded.email;
+
+    console.log("========================================");
+    console.log("🔍 RESET PASSWORD DEBUG:");
+    console.log("Email from token:", email);
+    console.log("Validate only:", validateOnly);
+    console.log("========================================");
+
+    if (validateOnly) {
+      return res.json({ success: true, email });
+    }
+
+    if (!password || password.length < 6) {
+      return res.json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    // FIND USER - ENHANCED LOGGING
+    console.log("🔍 Searching for user with email:", email);
+    console.log("Using endpoint:", `${SUPABASE_SERVICE_URL}/auth/v1/admin/users`);
+    
+    const listResp = await fetch(
+      `${SUPABASE_SERVICE_URL}/auth/v1/admin/users`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+
+    const usersData = await listResp.json();
+    console.log("📋 Total users found:", Array.isArray(usersData) ? usersData.length : usersData.users?.length || 0);
+    
+    const users = Array.isArray(usersData) ? usersData : usersData.users || [];
+    
+    // Log all user emails (for debugging)
+    console.log("📧 All user emails:", users.map(u => u.email));
+    
+    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    
+    console.log("✅ User found:", user ? "YES" : "NO");
+    if (user) {
+      console.log("👤 User ID:", user.id);
+      console.log("📧 User Email:", user.email);
+    }
+    console.log("========================================");
+
+    if (!user) return res.json({ success: false, message: "User not found" });
+
+    // UPDATE PASSWORD
+    console.log("🔄 Updating password for user:", user.id);
+    
+    const updateResp = await fetch(
+      `${SUPABASE_SERVICE_URL}/auth/v1/admin/users/${user.id}`,
+      {
+        method: "PUT",
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
+      }
+    );
+
+    const updateData = await updateResp.json();
+    
+    if (!updateResp.ok) {
+      console.error("❌ Password update failed:", updateData);
+      return res.json({ 
+        success: false, 
+        message: updateData.message || "Failed to update password" 
+      });
+    }
+
+    console.log("✅ Password updated successfully");
+    console.log("========================================");
+
+    return res.json({
+      success: true,
+      message: "Password updated successfully",
+    });
+
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    return res.status(500).json({ success: false });
+  }
+});
+
+/* ============================
+   UPLOAD PROFILE PICTURE - OPTIMIZED
+   Images are pre-compressed on frontend, so no server processing needed
+============================ */
+app.post('/api/upload-profile-picture', uploadProfilePicture.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded'
+      });
+    }
+
+    const { userId } = req.body;
+
+    if (!userId) {
+      // Clean up uploaded file
+      fs.removeSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    console.log('✅ Profile picture uploaded (pre-compressed by client):', req.file.filename);
+
+    // Delete old profile pictures for this user
+    try {
+      const files = fs.readdirSync(PROFILE_PICS_DIR);
+      files.forEach(file => {
+        if (file.startsWith(`profile_${userId}_`) && file !== req.file.filename) {
+          const oldFilePath = path.join(PROFILE_PICS_DIR, file);
+          fs.removeSync(oldFilePath);
+          console.log('🗑️ Deleted old profile picture:', oldFilePath);
+        }
+      });
+    } catch (err) {
+      console.error('Error cleaning up old profile pictures:', err);
+    }
+
+    // Generate avatar URL
+    const avatarUrl = `/api/profile-pictures/${req.file.filename}`;
+
+    // Update user profile in Supabase
+    try {
+      const updateResp = await fetch(
+        `${SUPABASE_SERVICE_URL}/rest/v1/profiles?id=eq.${userId}`,
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: SUPABASE_SERVICE_ROLE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation'
+          },
+          body: JSON.stringify({
+            avatar_url: avatarUrl,
+            updated_at: new Date().toISOString()
+          })
+        }
+      );
+
+      if (!updateResp.ok) {
+        console.error('Failed to update profile in Supabase');
+      }
+    } catch (err) {
+      console.error('Error updating profile in Supabase:', err);
+    }
+
+    console.log('✅ Profile picture uploaded successfully:', req.file.filename);
+
+    res.json({
+      success: true,
+      message: 'Profile picture uploaded successfully',
+      avatarUrl: avatarUrl,
+      filename: req.file.filename
+    });
+
+  } catch (error) {
+    console.error('Error uploading profile picture:', error);
+    
+    // Clean up file if it was uploaded
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.removeSync(req.file.path);
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile picture',
+      error: error.message
+    });
+  }
+});
+
+/* ============================
+   SERVE PROFILE PICTURE - WITH CACHING
+============================ */
+app.get('/api/profile-pictures/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const filePath = path.join(PROFILE_PICS_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile picture not found'
+      });
+    }
+
+    // Set appropriate content type
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypeMap = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp'
+    };
+
+    res.setHeader('Content-Type', contentTypeMap[ext] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    res.setHeader('ETag', `"${filename}"`); // Add ETag for better caching
+
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        console.error('Error sending file:', err);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to serve profile picture',
+          error: err.message
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Error serving profile picture:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to serve profile picture',
+      error: error.message
+    });
+  }
+});
+
+/* ============================
+   SERVE PROFILE PICTURE - WITH CACHING
+============================ */
+app.get('/api/profile-pictures/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const filePath = path.join(PROFILE_PICS_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile picture not found'
+      });
+    }
+
+    // Set appropriate content type
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypeMap = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp'
+    };
+
+    res.setHeader('Content-Type', contentTypeMap[ext] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    res.setHeader('ETag', `"${filename}"`); // Add ETag for better caching
+
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        console.error('Error sending file:', err);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to serve profile picture',
+          error: err.message
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Error serving profile picture:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to serve profile picture',
+      error: error.message
+    });
+  }
+});
+
+/* ============================
+   SERVE PROFILE PICTURE
+============================ */
+app.get('/api/profile-pictures/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const filePath = path.join(PROFILE_PICS_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile picture not found'
+      });
+    }
+
+    // Set appropriate content type
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypeMap = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp'
+    };
+
+    res.setHeader('Content-Type', contentTypeMap[ext] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Error serving profile picture:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to serve profile picture',
+      error: error.message
+    });
+  }
+});
+
+// ================================
+// REMOVE PROFILE PICTURE (FULL FIX)
+// ================================
+app.delete('/api/remove-profile-picture', async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required',
+      });
+    }
+
+    // 1️⃣ Get profile from Supabase
+    const profileRes = await fetch(
+      `${SUPABASE_SERVICE_URL}/rest/v1/profiles?id=eq.${userId}&select=avatar_url`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+
+    const profiles = await profileRes.json();
+    const avatarUrl = profiles?.[0]?.avatar_url;
+
+    // 2️⃣ Delete file from main storage
+    if (avatarUrl) {
+      const fileName = path.basename(avatarUrl); 
+      const filePath = path.join(PROFILE_PICS_DIR, fileName);
+
+      if (fs.existsSync(filePath)) {
+        fs.removeSync(filePath);
+        console.log('🗑️ Deleted profile picture file:', fileName);
+      }
+    }
+
+    // 3️⃣ Update Supabase profile
+    await fetch(`${SUPABASE_SERVICE_URL}/rest/v1/profiles?id=eq.${userId}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        avatar_url: null,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+
+    return res.json({
+      success: true,
+      message: 'Profile picture removed successfully',
+    });
+  } catch (err) {
+    console.error('Remove profile picture error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove profile picture',
+    });
+  }
+});
+
+
+/* ============================
+   STATIC FRONTEND - MUST BE LAST
+=========================== */
+
+const DIST_PATH = path.join(__dirname, "dist");
+
+console.log("Serving frontend from:", DIST_PATH);
+
+// Check if dist folder exists
+if (!fs.existsSync(DIST_PATH)) {
+  console.error("⚠️ WARNING: dist folder not found at:", DIST_PATH);
+  console.error("Please run 'npm run build' first");
+}
+
+// Serve static files with proper MIME types
+app.use(express.static(DIST_PATH, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    } else if (filePath.endsWith('.css')) {
+      res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    } else if (filePath.endsWith('.json')) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+  }
+}));
+
+// Explicitly serve assets directory
+const assetsPath = path.join(DIST_PATH, 'assets');
+if (fs.existsSync(assetsPath)) {
+  app.use('/assets', express.static(assetsPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      } else if (filePath.endsWith('.css')) {
+        res.setHeader('Content-Type', 'text/css; charset=utf-8');
+      }
+    }
+  }));
+}
+
+// 404 handler for API routes (must be before SPA fallback)
+app.use("/api/*", (req, res) => {
+  return res.status(404).json({
     success: false,
-    message: 'Route not found',
-    path: req.originalUrl
+    message: "API route not found",
+    path: req.originalUrl,
   });
 });
+
+// SPA fallback - MUST BE LAST
+app.get('*', (req, res) => {
+  const indexPath = path.join(DIST_PATH, "index.html");
+  
+  if (!fs.existsSync(indexPath)) {
+    return res.status(500).send('Application not built. Please run: npm run build');
+  }
+  
+  res.sendFile(indexPath);
+});
+
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 File storage server running on port ${PORT}`);
