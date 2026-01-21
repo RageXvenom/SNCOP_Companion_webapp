@@ -1,213 +1,357 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { supabase, Profile } from '../lib/supabaseClient';
-import { User, Session } from '@supabase/supabase-js';
+// =======================================
+// AuthContext.tsx – FIXED SESSION PERSISTENCE + PROFILE PICTURE SUPPORT
+// =======================================
+
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
+import { supabase, Profile } from "../lib/supabaseClient";
+import { Session, User } from "@supabase/supabase-js";
+import { postJSON } from "../services/api";
 
 interface AuthContextType {
   user: User | null;
   profile: Profile | null;
   session: Session | null;
   loading: boolean;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    fullName: string
+  ) => Promise<{ error: Error | null }>;
+  signIn: (
+    email: string,
+    password: string
+  ) => Promise<{ error: Error | null; data?: any }>;
   signOut: () => Promise<void>;
-  updateProfile: (fullName: string) => Promise<{ error: Error | null }>;
+  updateProfile: (fullName: string, avatarUrl?: string) => Promise<{ error: Error | null }>;
   updateEmail: (newEmail: string) => Promise<{ error: Error | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: Error | null }>;
+  requestPasswordReset: (email: string) => Promise<{ error: Error | null }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+// Detect Supabase recovery mode
+function isRecoveryFlow(): boolean {
+  return window.location.hash.includes("type=recovery");
+}
+
+// Robust check for whether a Supabase user is verified
+function isVerifiedUser(user?: User | null): boolean {
+  if (!user) return false;
+  const u: any = user as any;
+  return Boolean(
+    (typeof u.email_confirmed_at === "string" && u.email_confirmed_at.trim() !== "") ||
+      (typeof u.confirmed_at === "string" && u.confirmed_at.trim() !== "") ||
+      u.user_metadata?.email_verified === true
+  );
+}
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
-        setProfile(null);
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  const fetchProfile = async (userId: string) => {
+  // ==========================================================
+  // FETCH PROFILE
+  // ==========================================================
+  const fetchProfile = useCallback(async (id: string) => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
+      const { data } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", id)
         .maybeSingle();
 
-      if (error) throw error;
-      setProfile(data);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
+      setProfile(data ?? null);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const signUp = async (email: string, password: string, fullName: string) => {
-    try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-      });
+  // ==========================================================
+  // INITIAL SESSION LOAD + LISTENER
+  // ==========================================================
+  useEffect(() => {
+    // ✅ Initial session check - will restore from localStorage
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const recovery = isRecoveryFlow();
+      const verified = isVerifiedUser(session?.user ?? null);
 
-      if (signUpError) throw signUpError;
-
-      if (data.user) {
-        const { data: existingProfile } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', data.user.id)
-          .maybeSingle();
-
-        if (!existingProfile) {
-          const { error: profileError } = await supabase
-            .from('profiles')
-            .insert([
-              {
-                id: data.user.id,
-                email: data.user.email!,
-                full_name: fullName,
-              },
-            ]);
-
-          if (profileError) {
-            if (profileError.message.includes('duplicate key') || profileError.message.includes('profiles_email_key')) {
-              throw new Error('This email is already registered. Please use a different email or try logging in.');
-            }
-            throw profileError;
-          }
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 500));
+      // Only reject unverified users who aren't in recovery flow
+      if (session?.user && !verified && !recovery) {
+        console.log("⚠️ Unverified user detected, signing out");
+        supabase.auth.signOut();
+        setUser(null);
+        setProfile(null);
+        setSession(null);
+        setLoading(false);
+        return;
       }
 
-      return { error: null };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
+      // ✅ Restore session if valid
+      if (session?.user && (verified || recovery)) {
+        console.log("✅ Session restored from storage");
+        setSession(session);
+        setUser(session.user);
+        fetchProfile(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    });
 
-  const signIn = async (email: string, password: string) => {
+    // ✅ Listen for auth state changes
+    const { data } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log("🔄 Auth state changed:", event);
+        
+        const recovery = isRecoveryFlow();
+        const verified = isVerifiedUser(session?.user ?? null);
+
+        // Only reject unverified users who aren't in recovery flow
+        if (session?.user && !verified && !recovery) {
+          console.log("⚠️ Unverified user detected in state change");
+          supabase.auth.signOut();
+          setUser(null);
+          setProfile(null);
+          setSession(null);
+          setLoading(false);
+          return;
+        }
+
+        setSession(session);
+        setUser(session?.user ?? null);
+
+        if (session?.user?.id) {
+          fetchProfile(session.user.id);
+        } else {
+          setProfile(null);
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      if (data && data.subscription) {
+        data.subscription.unsubscribe();
+      }
+    };
+  }, [fetchProfile]);
+
+  // ==========================================================
+  // SIGN UP
+  // ==========================================================
+  const signUp = useCallback(async (email, password, fullName) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const res = await postJSON("/api/register", {
         email,
         password,
+        fullName,
       });
 
-      if (error) throw error;
-      return { error: null };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
+      if (!res.success)
+        return { error: new Error(res.message || "Registration failed") };
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
+      // Clear any existing session after registration
+      await supabase.auth.signOut();
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+
+      return { error: null };
+    } catch (err) {
+      return { error: err };
+    }
+  }, []);
+
+  // ==========================================================
+  // SIGN IN
+  // ==========================================================
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      try {
+        const res = await postJSON("/api/login", { email, password });
+
+        if (!res.success)
+          return { error: new Error(res.message || "Login failed") };
+
+        const { access_token, refresh_token } = res;
+
+        // ✅ Set session - this will persist to localStorage automatically
+        await supabase.auth.setSession({
+          access_token,
+          refresh_token: refresh_token ?? null,
+        });
+
+        // ✅ Get the session that was just set
+        const { data } = await supabase.auth.getSession();
+        const currentUser = data?.session?.user ?? null;
+
+        const verified = isVerifiedUser(currentUser);
+
+        if (!verified) {
+          await supabase.auth.signOut();
+          return {
+            error: new Error("Please verify your email before logging in."),
+          };
+        }
+
+        console.log("✅ User logged in successfully");
+        setUser(currentUser);
+        setSession(data?.session ?? null);
+
+        if (currentUser) fetchProfile(currentUser.id);
+
+        return { error: null, data: currentUser };
+      } catch (err: any) {
+        return { error: new Error(err.message || "Login failed") };
+      }
+    },
+    [fetchProfile]
+  );
+
+  // ==========================================================
+  // SIGN OUT
+  // ==========================================================
+  const signOut = useCallback(async () => {
+    try {
+      // ✅ Sign out will clear localStorage automatically
+      await supabase.auth.signOut({ scope: "local" });
+      console.log("✅ User signed out");
+    } catch (err) {
+      console.error("Sign out error:", err);
+    }
+
+    localStorage.removeItem("recovery_done");
     setUser(null);
     setProfile(null);
     setSession(null);
-  };
+  }, []);
 
-  const updateProfile = async (fullName: string) => {
+  // ==========================================================
+  // UPDATE PROFILE (NOW SUPPORTS AVATAR URL)
+  // ==========================================================
+  const updateProfile = useCallback(
+    async (fullName: string, avatarUrl?: string) => {
+      try {
+        if (!user) throw new Error("Not logged in");
+
+        // Prepare update object
+        const updates: any = {
+          full_name: fullName,
+          updated_at: new Date().toISOString(),
+        };
+
+        // Only include avatar_url if it's explicitly provided
+        if (avatarUrl !== undefined) {
+          updates.avatar_url = avatarUrl;
+        }
+
+        // Update in Supabase
+        const { error } = await supabase
+          .from("profiles")
+          .update(updates)
+          .eq("id", user.id);
+
+        if (error) throw error;
+
+        // Update local state
+        setProfile((p) => {
+          if (!p) return p;
+          const updated = { ...p, full_name: fullName };
+          if (avatarUrl !== undefined) {
+            updated.avatar_url = avatarUrl;
+          }
+          return updated;
+        });
+
+        // Refresh profile to ensure sync
+        await fetchProfile(user.id);
+
+        return { error: null };
+      } catch (err: any) {
+        console.error("Update profile error:", err);
+        return { error: err };
+      }
+    },
+    [user, fetchProfile]
+  );
+
+  // ==========================================================
+  // UPDATE EMAIL
+  // ==========================================================
+  const updateEmail = useCallback(async (email: string) => {
     try {
-      if (!user) throw new Error('No user logged in');
-
-      const { error } = await supabase
-        .from('profiles')
-        .update({ full_name: fullName })
-        .eq('id', user.id);
-
+      const { error } = await supabase.auth.updateUser({ email });
       if (error) throw error;
-
-      setProfile(prev => prev ? { ...prev, full_name: fullName } : null);
       return { error: null };
-    } catch (error) {
-      return { error: error as Error };
+    } catch (err: any) {
+      console.error("Update email error:", err);
+      return { error: err };
+    }
+  }, []);
+
+  // ==========================================================
+  // UPDATE PASSWORD
+  // ==========================================================
+  const updatePassword = useCallback(async (pw: string) => {
+    try {
+      const { error } = await supabase.auth.updateUser({ password: pw });
+      if (error) throw error;
+      return { error: null };
+    } catch (err: any) {
+      console.error("Update password error:", err);
+      return { error: err };
+    }
+  }, []);
+
+  // ==========================================================
+  // REQUEST PASSWORD RESET
+  // ==========================================================
+  const requestPasswordReset = async (email: string) => {
+    try {
+      const res = await postJSON("/api/forgot-password", { email });
+      if (!res.success) return { error: new Error(res.message) };
+      return { error: null };
+    } catch (err: any) {
+      return { error: err };
     }
   };
 
-  const updateEmail = async (newEmail: string) => {
-    try {
-      if (!user) throw new Error('No user logged in');
-
-      const { error } = await supabase.auth.updateUser({
-        email: newEmail
-      });
-
-      if (error) throw error;
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({ email: newEmail })
-        .eq('id', user.id);
-
-      if (profileError) throw profileError;
-
-      setProfile(prev => prev ? { ...prev, email: newEmail } : null);
-      return { error: null };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
-
-  const updatePassword = async (newPassword: string) => {
-    try {
-      if (!user) throw new Error('No user logged in');
-
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword
-      });
-
-      if (error) throw error;
-
-      return { error: null };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
-
-  const value = {
-    user,
-    profile,
-    session,
-    loading,
-    signUp,
-    signIn,
-    signOut,
-    updateProfile,
-    updateEmail,
-    updatePassword,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  // ==========================================================
+  // PROVIDER
+  // ==========================================================
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        session,
+        loading,
+        signUp,
+        signIn,
+        signOut,
+        updateProfile,
+        updateEmail,
+        updatePassword,
+        requestPasswordReset,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+export const useAuth = (): AuthContextType => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
+  return ctx;
 };

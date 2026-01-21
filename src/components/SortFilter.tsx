@@ -182,3 +182,4 @@ const SortFilter: React.FC<SortFilterProps> = ({
 };
 
 export default SortFilter;
+

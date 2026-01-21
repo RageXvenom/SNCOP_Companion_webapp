@@ -7,20 +7,32 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
+/* ---------------------------------------------------
+   ✅ FIXED: Allow session persistence for logged-in users
+   - Remove localStorage clearing on init
+   - Enable persistSession so users stay logged in
+   - Keep autoRefreshToken enabled for seamless experience
+---------------------------------------------------- */
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true
+    autoRefreshToken: true,      // ✅ Enable automatic token refresh
+    persistSession: true,         // ✅ Enable session persistence across refreshes
+    detectSessionInUrl: true,     // Keep for recovery flows
+    storageKey: 'supabase.auth.token', // Use consistent storage key
   }
 });
 
+/* ---------------------------------------------------
+   Types
+---------------------------------------------------- */
 export interface Profile {
   id: string;
   email: string;
   full_name: string;
   created_at: string;
   updated_at: string;
+  avatar_url?: string | null;
 }
 
 export interface ChatConversation {

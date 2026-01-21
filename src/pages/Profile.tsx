@@ -1,26 +1,234 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { User, Mail, Lock, Eye, EyeOff, Loader, Save, LogOut } from 'lucide-react';
+import { User, Mail, Lock, Eye, EyeOff, Loader, Save, LogOut, Camera, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 const Profile: React.FC = () => {
   const { user, profile, signOut, updateProfile, updateEmail, updatePassword } = useAuth();
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [fullName, setFullName] = useState(profile?.full_name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [profilePicture, setProfilePicture] = useState<string>(profile?.avatar_url || '');
+  const [profilePictureFile, setProfilePictureFile] = useState<File | null>(null);
+  const [profilePicturePreview, setProfilePicturePreview] = useState<string>('');
 
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [uploadingPicture, setUploadingPicture] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // ✅ Update profile picture when profile changes
+  useEffect(() => {
+    if (profile?.avatar_url) {
+      setProfilePicture(profile.avatar_url);
+    }
+  }, [profile?.avatar_url]);
+
+  // ✅ Optimized image compression
+  const compressImage = (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Max dimensions
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 800;
+          
+          let width = img.width;
+          let height = img.height;
+          
+          // Calculate new dimensions
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          
+          // Draw and compress
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                resolve(blob);
+              } else {
+                reject(new Error('Canvas to Blob conversion failed'));
+              }
+            },
+            'image/jpeg',
+            0.85 // 85% quality
+          );
+        };
+        img.onerror = reject;
+      };
+      reader.onerror = reject;
+    });
+  };
+
+const handleProfilePictureChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  // ❌ image nahi hai
+  if (!file.type.startsWith('image/')) {
+    setError('Please select an image file');
+    return;
+  }
+
+  // ❌ size limit
+  if (file.size > 5 * 1024 * 1024) {
+    setError('Image size must be less than 5MB');
+    return;
+  }
+
+  setError('');
+
+  // ✅ STEP 1: GIF ko as-it-is rakho (NO compression)
+  if (file.type === 'image/gif') {
+    setProfilePictureFile(file);
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setProfilePicturePreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+
+    return; // 🔴 IMPORTANT
+  }
+
+  // ✅ STEP 2: JPG / PNG ke liye compression
+  try {
+    const compressedBlob = await compressImage(file);
+
+    const compressedFile = new File(
+      [compressedBlob],
+      file.name,
+      { type: 'image/jpeg', lastModified: Date.now() }
+    );
+
+    setProfilePictureFile(compressedFile);
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setProfilePicturePreview(reader.result as string);
+    };
+    reader.readAsDataURL(compressedFile);
+  } catch (err) {
+    setError('Image processing failed');
+  }
+};
+
+
+  const handleUploadProfilePicture = async () => {
+    if (!profilePictureFile) return;
+
+    setUploadingPicture(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', profilePictureFile);
+      formData.append('userId', user?.id || '');
+
+      const response = await fetch('/api/upload-profile-picture', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setProfilePicture(data.avatarUrl);
+        setProfilePicturePreview('');
+        setProfilePictureFile(null);
+        setSuccess('Profile picture updated successfully!');
+        
+        // ✅ Update profile with new avatar URL (keep current name)
+        await updateProfile(fullName, data.avatarUrl);
+        
+        // Clear file input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      } else {
+        setError(data.message || 'Failed to upload profile picture');
+      }
+    } catch (err) {
+      setError('Failed to upload profile picture');
+      console.error('Upload error:', err);
+    } finally {
+      setUploadingPicture(false);
+    }
+  };
+
+  const handleRemoveProfilePicture = async () => {
+    setUploadingPicture(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await fetch('/api/remove-profile-picture', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId: user?.id }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setProfilePicture('');
+        setProfilePicturePreview('');
+        setProfilePictureFile(null);
+        setSuccess('Profile picture removed successfully!');
+        
+        // ✅ Update profile to remove avatar URL (keep current name)
+        await updateProfile(fullName, '');
+      } else {
+        setError(data.message || 'Failed to remove profile picture');
+      }
+    } catch (err) {
+      setError('Failed to remove profile picture');
+      console.error('Remove error:', err);
+    } finally {
+      setUploadingPicture(false);
+    }
+  };
+
+  const handleCancelUpload = () => {
+    setProfilePictureFile(null);
+    setProfilePicturePreview('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +242,8 @@ const Profile: React.FC = () => {
       return;
     }
 
-    const { error } = await updateProfile(fullName.trim());
+    // ✅ FIX: Keep the current profile picture when updating name
+    const { error } = await updateProfile(fullName.trim(), profilePicture || profile?.avatar_url || '');
 
     if (error) {
       setError(error.message);
@@ -104,6 +313,15 @@ const Profile: React.FC = () => {
     navigate('/');
   };
 
+  const getInitials = (name: string) => {
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
   return (
     <div className="min-h-screen py-20 px-4">
       <div className="max-w-4xl mx-auto">
@@ -148,6 +366,109 @@ const Profile: React.FC = () => {
             )}
 
             <div className="space-y-8">
+              {/* Profile Picture Section */}
+              <motion.div
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                transition={{ delay: 0.1 }}
+              >
+                <h2 className="text-xl font-bold text-high-contrast mb-4">Profile Picture</h2>
+                <div className="flex flex-col sm:flex-row items-center gap-6">
+                  {/* Avatar Display */}
+                  <div className="relative group">
+                    {profilePicturePreview || profilePicture ? (
+                      <img
+                        src={profilePicturePreview || profilePicture}
+                        alt="Profile"
+                        className="w-32 h-32 rounded-full object-cover border-4 border-blue-500/30 shadow-lg"
+                      />
+                    ) : (
+                      <div className="w-32 h-32 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center border-4 border-blue-500/30 shadow-lg">
+                        <span className="text-white text-4xl font-bold">
+                          {getInitials(fullName || user?.email || 'U')}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Camera overlay on hover */}
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute inset-0 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Camera className="h-8 w-8 text-white" />
+                    </button>
+                  </div>
+
+                  {/* Upload Controls */}
+                  <div className="flex-1 space-y-4">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProfilePictureChange}
+                      className="hidden"
+                    />
+
+                    {profilePictureFile ? (
+                      <div className="space-y-3">
+                        <p className="text-sm text-high-contrast">
+                          Selected: {profilePictureFile.name} ({(profilePictureFile.size / 1024).toFixed(2)} KB)
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={handleUploadProfilePicture}
+                            disabled={uploadingPicture}
+                            className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover-scale font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {uploadingPicture ? (
+                              <Loader className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Save className="h-4 w-4" />
+                            )}
+                            <span>Upload</span>
+                          </button>
+                          <button
+                            onClick={handleCancelUpload}
+                            disabled={uploadingPicture}
+                            className="flex items-center space-x-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover-scale font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <X className="h-4 w-4" />
+                            <span>Cancel</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg hover-scale font-bold"
+                        >
+                          <Camera className="h-4 w-4" />
+                          <span>Change Picture</span>
+                        </button>
+                        {(profilePicture || profilePicturePreview) && (
+                          <button
+                            onClick={handleRemoveProfilePicture}
+                            disabled={uploadingPicture}
+                            className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-600 text-white rounded-lg hover-scale font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {uploadingPicture ? (
+                              <Loader className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <X className="h-4 w-4" />
+                            )}
+                            <span>Remove</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Images are automatically optimized. Max 5MB (JPG, PNG, GIF)
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
               <motion.div
                 initial={{ x: -20, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}

@@ -3,11 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send,
   Paperclip,
-  Image as ImageIcon,
+  Image,
   FileText,
   X,
   Bot,
-  User as UserIcon,
+  User,
   Loader,
   Trash2,
   LogOut,
@@ -18,6 +18,72 @@ import { useNavigate } from 'react-router-dom';
 import { supabase, ChatMessage, ChatConversation } from '../lib/supabaseClient';
 import { aiService, AIMessage } from '../services/aiService';
 import ReactMarkdown from 'react-markdown';
+
+const TypingAnimation: React.FC<{ fullName: string }> = ({ fullName }) => {
+  const [displayText, setDisplayText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [messageIndex, setMessageIndex] = useState(0);
+  
+  const messages = [
+    `Welcome, ${fullName} Ji`,
+    `I Am SNCOP-AI, Developed by Arvind Nag`,
+    `How Can I help you`
+  ];
+  
+  const typingSpeed = 50;
+  const deletingSpeed = 30;
+  const pauseTime = 2000;
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    const currentMessage = messages[messageIndex];
+
+    const handleTyping = () => {
+      const currentLength = displayText.length;
+
+      if (!isDeleting) {
+        if (currentLength < currentMessage.length) {
+          setDisplayText(currentMessage.substring(0, currentLength + 1));
+          timer = setTimeout(handleTyping, typingSpeed);
+        } else {
+          timer = setTimeout(() => setIsDeleting(true), pauseTime);
+        }
+      } else {
+        if (currentLength > 0) {
+          setDisplayText(currentMessage.substring(0, currentLength - 1));
+          timer = setTimeout(handleTyping, deletingSpeed);
+        } else {
+          setIsDeleting(false);
+          setMessageIndex((messageIndex + 1) % messages.length);
+        }
+      }
+    };
+
+    timer = setTimeout(handleTyping, typingSpeed);
+
+    return () => clearTimeout(timer);
+  }, [displayText, isDeleting, messageIndex]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex justify-center items-center py-12"
+    >
+      <div className="flex gap-3 max-w-3xl">
+        <div className="w-12 h-12 rounded-full bg-gradient-to-r from-green-500 to-teal-500 flex items-center justify-center">
+          <Bot className="h-6 w-6 text-white" />
+        </div>
+        <div className="glass-effect rounded-2xl p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 min-w-[400px]">
+          <p className="text-lg font-medium text-gray-900 dark:text-white">
+            {displayText}
+            <span className="animate-pulse">|</span>
+          </p>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
 
 const AIChat: React.FC = () => {
   const { user, profile, signOut } = useAuth();
@@ -30,6 +96,7 @@ const AIChat: React.FC = () => {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
     if (!user) {
@@ -251,13 +318,13 @@ const AIChat: React.FC = () => {
     navigate('/login');
   };
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const showWelcomeAnimation = messages.length === 0;
 
   return (
-    <div className="min-h-screen flex relative">
+    <div className="min-h-screen flex relative bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-gray-900 dark:to-gray-800">
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="md:hidden fixed bottom-4 left-4 z-50 p-2 rounded-lg glass-effect hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+        className="md:hidden fixed bottom-4 left-4 z-50 p-2 rounded-lg glass-effect hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shadow-lg"
       >
         <MessageSquare className="h-6 w-6 text-gray-900 dark:text-white" />
       </button>
@@ -265,11 +332,13 @@ const AIChat: React.FC = () => {
       <motion.aside
         initial={{ x: -300, opacity: 0 }}
         animate={{ x: sidebarOpen ? 0 : -320, opacity: sidebarOpen ? 1 : 0 }}
-        className="w-80 glass-effect border-r border-gray-200 dark:border-gray-700 flex flex-col fixed md:relative h-screen z-40 md:z-auto"
+        className="w-80 glass-effect border-r border-gray-200 dark:border-gray-700 flex flex-col fixed md:relative h-screen z-40 md:z-auto backdrop-blur-xl"
       >
         <div className="p-6 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold text-gradient neon-glow">SNCOP-AI</h2>
+            <h2 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+              SNCOP-AI
+            </h2>
             <button
               onClick={handleSignOut}
               className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
@@ -279,7 +348,7 @@ const AIChat: React.FC = () => {
             </button>
           </div>
           <p className="text-sm text-gray-700 dark:text-gray-300">
-            Welcome, {profile?.full_name || 'Student'}
+            Welcome, {profile?.full_name} Ji
           </p>
           <button
             onClick={async () => {
@@ -288,7 +357,7 @@ const AIChat: React.FC = () => {
                 setMessages([]);
               }
             }}
-            className="w-full mt-4 py-2 px-4 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold hover-scale shimmer-effect"
+            className="w-full mt-4 py-2 px-4 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold hover:scale-105 transition-transform shadow-lg"
           >
             <MessageSquare className="inline h-4 w-4 mr-2" />
             New Chat
@@ -332,6 +401,10 @@ const AIChat: React.FC = () => {
 
       <main className="flex-1 flex flex-col ml-0 md:ml-0 w-full">
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {showWelcomeAnimation && (
+            <TypingAnimation fullName={profile?.full_name || 'User'} />
+          )}
+
           <AnimatePresence>
             {messages.map((message, index) => (
               <motion.div
@@ -357,7 +430,7 @@ const AIChat: React.FC = () => {
                     }`}
                   >
                     {message.role === 'user' ? (
-                      <UserIcon className="h-5 w-5 text-white" />
+                      <User className="h-5 w-5 text-white" />
                     ) : (
                       <Bot className="h-5 w-5 text-white" />
                     )}
@@ -377,7 +450,7 @@ const AIChat: React.FC = () => {
                             className="flex items-center gap-2 text-xs bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded"
                           >
                             {att.type.startsWith('image/') ? (
-                              <ImageIcon className="h-3 w-3 text-gray-900 dark:text-white" />
+                              <Image className="h-3 w-3 text-gray-900 dark:text-white" />
                             ) : (
                               <FileText className="h-3 w-3 text-gray-900 dark:text-white" />
                             )}
@@ -413,7 +486,7 @@ const AIChat: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-6 border-t border-gray-200 dark:border-gray-700">
+        <div className="p-6 border-t border-gray-200 dark:border-gray-700 backdrop-blur-xl bg-white/50 dark:bg-gray-900/50">
           {attachments.length > 0 && (
             <div className="mb-4 flex flex-wrap gap-2">
               {attachments.map((file, index) => (
@@ -424,7 +497,7 @@ const AIChat: React.FC = () => {
                   className="flex items-center gap-2 glass-effect px-3 py-2 rounded-lg"
                 >
                   {file.type.startsWith('image/') ? (
-                    <ImageIcon className="h-4 w-4 text-blue-500" />
+                    <Image className="h-4 w-4 text-blue-500" />
                   ) : (
                     <FileText className="h-4 w-4 text-red-500" />
                   )}
@@ -467,7 +540,7 @@ const AIChat: React.FC = () => {
             <button
               onClick={handleSendMessage}
               disabled={loading || (!input.trim() && attachments.length === 0)}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold hover-scale disabled:opacity-50 disabled:cursor-not-allowed transition-all shimmer-effect"
+              className="px-6 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 transition-all shadow-lg"
             >
               <Send className="h-5 w-5" />
             </button>
@@ -479,4 +552,3 @@ const AIChat: React.FC = () => {
 };
 
 export default AIChat;
-
