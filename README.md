@@ -269,7 +269,7 @@ EXECUTE FUNCTION public.update_updated_at_column();
 | Column     | Type        | Description        |
 | ---------- | ----------- | ------------------ |
 | id         | uuid        | Primary key        |
-| user_id    | uuid        | FK → profiles      |
+| user_id    | uuid        | Foreign Key→ profiles      |
 | title      | text        | Conversation title |
 | created_at | timestamptz | Auto               |
 | updated_at | timestamptz | Auto               |
@@ -291,8 +291,8 @@ CREATE TABLE public.chat_conversations (
 | Column          | Type        | Description      |
 | --------------- | ----------- | ---------------- |
 | id              | uuid        | Primary key      |
-| conversation_id | uuid        | FK               |
-| user_id         | uuid        | FK               |
+| conversation_id | uuid        | Foreign Key              |
+| user_id         | uuid        | Foreign Key              |
 | role            | text        | user / assistant |
 | content         | text        | Message          |
 | attachments     | jsonb       | Files            |
