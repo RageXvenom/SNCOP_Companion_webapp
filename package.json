@@ -26,7 +26,13 @@
     "react-icons": "^5.2.1",
     "react-markdown": "^9.0.1",
     "react-router-dom": "^7.8.2",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+
+    "nodemailer": "^6.9.13",
+    "jsonwebtoken": "^9.0.2",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "cross-fetch": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
